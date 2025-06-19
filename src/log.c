@@ -25,14 +25,26 @@ uint32_t log_buffer_size;
 void log_init(void) {}
 
 void log_printf(const char *fmt, ...) {
+<<<<<<< HEAD
+=======
+  if (log_buffer_size >= LOG_BUFFER_SIZE - 1)
+    // Buffer is full, cannot log more
+    return;
+
+>>>>>>> 1390ccf91b3075c126efce8016e409c079348e44
   va_list args;
 
   va_start(args, fmt);
   int len = vsnprintf(NULL, 0, fmt, args);
   va_end(args);
 
+<<<<<<< HEAD
   if (len <= 0 || log_buffer_size + len >= LOG_BUFFER_SIZE)
     // Buffer overflow, or invalid length
+=======
+  if (len <= 0)
+    // Invalid length
+>>>>>>> 1390ccf91b3075c126efce8016e409c079348e44
     return;
 
   va_start(args, fmt);
