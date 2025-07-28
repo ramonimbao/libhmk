@@ -14,6 +14,7 @@
  */
 
 #include "advanced_keys.h"
+#include "commands.h"
 #include "crc32.h"
 #include "deferred_actions.h"
 #include "eeconfig.h"
@@ -26,7 +27,9 @@
 #include "wear_leveling.h"
 
 int main(void) {
+#if defined(LOG_ENABLED)
   log_init();
+#endif
 
   // Initialize the hardware
   board_init();
@@ -45,6 +48,7 @@ int main(void) {
   deferred_action_init();
   advanced_key_init();
   layout_init();
+  command_init();
 
   tud_init(BOARD_TUD_RHPORT);
 
@@ -54,6 +58,9 @@ int main(void) {
     analog_task();
     matrix_scan();
     layout_task();
+#if defined(LOG_ENABLED)
+    log_task();
+#endif
   }
 
   return 0;
