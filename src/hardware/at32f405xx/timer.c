@@ -13,31 +13,18 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "crc32.h"
-
 #include "hardware/hardware.h"
-#include "stm32f4xx_hal.h"
 
-static CRC_HandleTypeDef crc_handle;
+#include "at32f402_405.h"
 
-void crc32_init(void) {
-  __HAL_RCC_CRC_CLK_ENABLE();
+static volatile uint32_t counter;
 
-  crc_handle.Instance = CRC;
-  if (HAL_CRC_Init(&crc_handle) != HAL_OK)
-    board_error_handler();
-}
+void timer_init(void) { SysTick_Config(system_core_clock / 1000); }
 
-uint32_t crc32_compute(const void *buf, uint32_t len, uint32_t crc) {
-  const uint8_t *buf8 = buf;
-  uint32_t k = 0;
+uint32_t timer_read(void) { return counter; }
 
-  HAL_CRC_Calculate(&crc_handle, &crc, 1);
-  crc = HAL_CRC_Accumulate(&crc_handle, (void *)buf8, len >> 2);
-  if (len & 3) {
-    memcpy(&k, buf8 + (len & ~(uint32_t)3), len & 3);
-    crc = HAL_CRC_Accumulate(&crc_handle, &k, 1);
-  }
+//--------------------------------------------------------------------+
+// Interrupt Handlers
+//--------------------------------------------------------------------+
 
-  return crc;
-}
+void SysTick_Handler(void) { counter++; }

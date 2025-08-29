@@ -19,7 +19,7 @@
 // Firmware Version
 //--------------------------------------------------------------------+
 
-#define FIRMWARE_VERSION 0x0100
+#define FIRMWARE_VERSION 0x0102
 
 //--------------------------------------------------------------------+
 // Common Headers
@@ -28,11 +28,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-// Load the configuration file before the rest of the headers
+#if defined(__has_include)
+#if __has_include("config.h")
+// Include additional configuration if available
 #include "config.h"
+#endif
+#endif
 
 #include "board_def.h"
 
@@ -46,20 +50,21 @@
 #define M_DIV_CEIL(n, d) (((n) + (d) - 1) / (d))
 #define M_BIT(n) (1UL << (n))
 #define M_IS_POWER_OF_TWO(n) (((n) != 0) && (((n) & ((n) - 1)) == 0))
+#define M_HEX(n) ((n) < 10 ? '0' + (n) : 'A' - 10 + (n))
 
 //--------------------------------------------------------------------+
 // Keyboard Configuration
 //--------------------------------------------------------------------+
 
 #if !defined(NUM_PROFILES)
-#define NUM_PROFILES 4
+#error "NUM_PROFILES is not defined"
 #endif
 
 _Static_assert(1 <= NUM_PROFILES && NUM_PROFILES <= 8,
                "NUM_PROFILES must be between 1 and 16");
 
 #if !defined(NUM_LAYERS)
-#define NUM_LAYERS 4
+#error "NUM_LAYERS is not defined"
 #endif
 
 _Static_assert(1 <= NUM_LAYERS && NUM_LAYERS <= 8,
@@ -73,8 +78,7 @@ _Static_assert(1 <= NUM_KEYS && NUM_KEYS <= 256,
                "NUM_KEYS must be between 1 and 256");
 
 #if !defined(NUM_ADVANCED_KEYS)
-// Maximum number of advanced keys
-#define NUM_ADVANCED_KEYS 32
+#error "NUM_ADVANCED_KEYS is not defined"
 #endif
 
 _Static_assert(1 <= NUM_ADVANCED_KEYS && NUM_ADVANCED_KEYS <= 64,
@@ -160,6 +164,9 @@ typedef struct __attribute__((packed)) {
   uint8_t hold_keycode;
   // Tapping term in milliseconds
   uint16_t tapping_term;
+  // Whether to immediately register the hold action if another non-Tap-Hold key
+  // is pressed, regardless of the tapping term
+  bool hold_on_other_key_press;
 } tap_hold_t;
 
 // Toggle configuration
@@ -174,10 +181,68 @@ typedef struct __attribute__((packed)) {
   uint8_t layer;
   uint8_t key;
   uint8_t type;
-  union {
+  union __attribute__((packed)) {
     null_bind_t null_bind;
     dynamic_keystroke_t dynamic_keystroke;
     tap_hold_t tap_hold;
     toggle_t toggle;
   };
 } advanced_key_t;
+
+// Gamepad buttons
+typedef enum {
+  GP_BUTTON_NONE = 0,
+
+  // Digital buttons
+  GP_BUTTON_A,
+  GP_BUTTON_B,
+  GP_BUTTON_X,
+  GP_BUTTON_Y,
+  GP_BUTTON_UP,
+  GP_BUTTON_DOWN,
+  GP_BUTTON_LEFT,
+  GP_BUTTON_RIGHT,
+  GP_BUTTON_START,
+  GP_BUTTON_BACK,
+  GP_BUTTON_HOME,
+  GP_BUTTON_LS,
+  GP_BUTTON_RS,
+  GP_BUTTON_LB,
+  GP_BUTTON_RB,
+
+  // Analog buttons
+  GP_BUTTON_LS_UP,
+  GP_BUTTON_LS_DOWN,
+  GP_BUTTON_LS_LEFT,
+  GP_BUTTON_LS_RIGHT,
+  GP_BUTTON_RS_UP,
+  GP_BUTTON_RS_DOWN,
+  GP_BUTTON_RS_LEFT,
+  GP_BUTTON_RS_RIGHT,
+  GP_BUTTON_LT,
+  GP_BUTTON_RT,
+} gamepad_button_t;
+
+// Gamepad options configuration
+typedef struct __attribute__((packed)) {
+  // 4 points that define the analog curve, representing the relationship
+  // between the key position and the gamepad analog value
+  uint8_t analog_curve[4][2];
+  union __attribute__((packed)) {
+    struct __attribute__((packed)) {
+      // Whether to enable the layout processing for this profile
+      bool keyboard_enabled : 1;
+      // Whether the layout module should process the underlying key if the key
+      // is mapped to a gamepad button
+      bool gamepad_override : 1;
+      // Whether the joystick output is square-shaped instead of circular
+      bool square_joystick : 1;
+      // Whether to use the maximum value of opposite axes for the joystick
+      // output instead of combining them
+      bool snappy_joystick : 1;
+      // Reserved bits for future use
+      uint8_t reserved : 4;
+    };
+    uint8_t options;
+  };
+} gamepad_options_t;

@@ -21,7 +21,7 @@
 // Bootloader Configuration
 //--------------------------------------------------------------------+
 
-#define BOOTLOADER_ADDR 0x1FFF0000
+#define BOOTLOADER_ADDR 0x1FFFA400
 #define BOOTLOADER_MAGIC 0xDEADBEEF
 
 //--------------------------------------------------------------------+
@@ -29,9 +29,9 @@
 //--------------------------------------------------------------------+
 
 // Flash size in bytes
-#define FLASH_SIZE (512 * 1024)
+#define FLASH_SIZE (256 * 1024)
 // Number of flash sectors/pages
-#define FLASH_NUM_SECTORS 8
+#define FLASH_NUM_SECTORS 128
 // Flash value when erased
 #define FLASH_EMPTY_VAL 0xFFFFFFFF
 
@@ -49,5 +49,5 @@
 
 #if !defined(ADC_NUM_SAMPLE_CYCLES)
 // Number of sample cycles for each ADC conversion
-#define ADC_NUM_SAMPLE_CYCLES ADC_SAMPLETIME_3CYCLES
+#define ADC_NUM_SAMPLE_CYCLES ADC_SAMPLETIME_7_5
 #endif

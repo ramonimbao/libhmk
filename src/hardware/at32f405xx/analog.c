@@ -15,10 +15,10 @@
 
 #include "hardware/hardware.h"
 
-#include "stm32f4xx_hal.h"
+#include "at32f402_405.h"
 
 // GPIO ports for each ADC channel
-static GPIO_TypeDef *channel_ports[] = {
+static gpio_type *channel_ports[] = {
     GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA,
     GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOC, GPIOC, GPIOC,
 };
@@ -28,9 +28,10 @@ _Static_assert(M_ARRAY_SIZE(channel_ports) == ADC_NUM_CHANNELS,
 
 // GPIO pins for each ADC channel
 static const uint16_t channel_pins[] = {
-    GPIO_PIN_0, GPIO_PIN_1, GPIO_PIN_2, GPIO_PIN_3, GPIO_PIN_4, GPIO_PIN_5,
-    GPIO_PIN_6, GPIO_PIN_7, GPIO_PIN_0, GPIO_PIN_1, GPIO_PIN_0, GPIO_PIN_1,
-    GPIO_PIN_2, GPIO_PIN_3, GPIO_PIN_4, GPIO_PIN_5,
+    GPIO_PINS_0, GPIO_PINS_1, GPIO_PINS_2, GPIO_PINS_3,
+    GPIO_PINS_4, GPIO_PINS_5, GPIO_PINS_6, GPIO_PINS_7,
+    GPIO_PINS_0, GPIO_PINS_1, GPIO_PINS_0, GPIO_PINS_1,
+    GPIO_PINS_2, GPIO_PINS_3, GPIO_PINS_4, GPIO_PINS_5,
 };
 
 _Static_assert(M_ARRAY_SIZE(channel_pins) == ADC_NUM_CHANNELS,
@@ -44,7 +45,7 @@ _Static_assert(M_ARRAY_SIZE(mux_input_channels) == ADC_NUM_MUX_INPUTS,
                "Invalid number of ADC multiplexer inputs");
 
 // GPIO ports for each multiplexer select pin
-static GPIO_TypeDef *mux_select_ports[] = ADC_MUX_SELECT_PORTS;
+static gpio_type *mux_select_ports[] = ADC_MUX_SELECT_PORTS;
 
 _Static_assert(M_ARRAY_SIZE(mux_select_ports) == ADC_NUM_MUX_SELECT_PINS,
                "Invalid number of multiplexer select pins");
@@ -80,12 +81,9 @@ _Static_assert(M_ARRAY_SIZE(raw_input_vector) == ADC_NUM_RAW_INPUTS,
                "Invalid number of ADC raw inputs");
 #endif
 
-static ADC_HandleTypeDef adc_handle;
-static DMA_HandleTypeDef dma_handle;
-#if ADC_NUM_MUX_INPUTS > 0
-// We only need a timer to delay the multiplexer outputs
-static TIM_HandleTypeDef tim_handle;
-#endif
+static adc_base_config_type adc_base_struct;
+static dma_init_type dma_init_struct;
+static gpio_init_type gpio_init_struct;
 
 // Set to true when `adc_values` is filled for the first time
 static volatile bool adc_initialized = false;
@@ -96,121 +94,124 @@ __attribute__((aligned(8))) static volatile uint16_t
 static volatile uint16_t adc_values[NUM_KEYS];
 
 void analog_init(void) {
-  ADC_ChannelConfTypeDef channel_config = {0};
-
   // Enable peripheral clocks
-  __HAL_RCC_ADC1_CLK_ENABLE();
-  __HAL_RCC_DMA2_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
+  crm_periph_clock_enable(CRM_ADC1_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_GPIOC_PERIPH_CLOCK, TRUE);
 #if ADC_NUM_MUX_INPUTS > 0
-  __HAL_RCC_TIM10_CLK_ENABLE();
+  crm_periph_clock_enable(CRM_TMR6_PERIPH_CLOCK, TRUE);
 #endif
 
   // Initialize the ADC peripheral
-  adc_handle.Instance = ADC1;
-  adc_handle.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-  adc_handle.Init.Resolution = ADC_RESOLUTION_12B;
-  adc_handle.Init.ScanConvMode = ENABLE;
-  adc_handle.Init.ContinuousConvMode = DISABLE;
-  adc_handle.Init.DiscontinuousConvMode = DISABLE;
-  adc_handle.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  adc_handle.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  adc_handle.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  adc_handle.Init.NbrOfConversion = ADC_NUM_MUX_INPUTS + ADC_NUM_RAW_INPUTS;
-  adc_handle.Init.DMAContinuousRequests = DISABLE;
-  adc_handle.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  if (HAL_ADC_Init(&adc_handle) != HAL_OK)
-    board_error_handler();
+  adc_clock_div_set(ADC_DIV_8);
+  adc_reset(ADC1);
+  adc_base_default_para_init(&adc_base_struct);
+  adc_base_struct.sequence_mode = TRUE;
+  adc_base_struct.repeat_mode = FALSE;
+  adc_base_struct.data_align = ADC_RIGHT_ALIGNMENT;
+  adc_base_struct.ordinary_channel_length =
+      ADC_NUM_MUX_INPUTS + ADC_NUM_RAW_INPUTS;
+  adc_base_config(ADC1, &adc_base_struct);
 
 #if ADC_NUM_MUX_INPUTS > 0
   // Initialize the multiplexer input channels
   for (uint32_t i = 0; i < ADC_NUM_MUX_INPUTS; i++) {
-    GPIO_InitTypeDef gpio_init = {0};
+    adc_ordinary_channel_set(ADC1,
+                             (adc_channel_select_type)mux_input_channels[i],
+                             i + 1, ADC_NUM_SAMPLE_CYCLES);
 
-    channel_config.Channel = mux_input_channels[i];
-    channel_config.Rank = i + 1;
-    channel_config.SamplingTime = ADC_NUM_SAMPLE_CYCLES;
-    if (HAL_ADC_ConfigChannel(&adc_handle, &channel_config) != HAL_OK)
-      board_error_handler();
-
-    gpio_init.Pin = channel_pins[mux_input_channels[i]];
-    gpio_init.Mode = GPIO_MODE_ANALOG;
-    gpio_init.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(channel_ports[mux_input_channels[i]], &gpio_init);
+    gpio_default_para_init(&gpio_init_struct);
+    gpio_init_struct.gpio_mode = GPIO_MODE_ANALOG;
+    gpio_init_struct.gpio_pins = channel_pins[mux_input_channels[i]];
+    gpio_init(channel_ports[mux_input_channels[i]], &gpio_init_struct);
   }
 
   // Initialize multiplexer select pins
   for (uint32_t i = 0; i < ADC_NUM_MUX_SELECT_PINS; i++) {
-    GPIO_InitTypeDef gpio_init = {0};
+    gpio_default_para_init(&gpio_init_struct);
+    gpio_init_struct.gpio_pins = mux_select_pins[i];
+    gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+    gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+    gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+    gpio_init(mux_select_ports[i], &gpio_init_struct);
 
-    gpio_init.Pin = mux_select_pins[i];
-    gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio_init.Pull = GPIO_NOPULL;
-    gpio_init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(mux_select_ports[i], &gpio_init);
-
-    HAL_GPIO_WritePin(mux_select_ports[i], mux_select_pins[i], GPIO_PIN_RESET);
+    gpio_bits_write(mux_select_ports[i], mux_select_pins[i], TRUE);
   }
 #endif
 
 #if ADC_NUM_RAW_INPUTS > 0
   // Initialize the raw input channels
   for (uint32_t i = 0; i < ADC_NUM_RAW_INPUTS; i++) {
-    GPIO_InitTypeDef gpio_init = {0};
+    adc_ordinary_channel_set(ADC1,
+                             (adc_channel_select_type)raw_input_channels[i],
+                             ADC_NUM_MUX_INPUTS + i + 1, ADC_NUM_SAMPLE_CYCLES);
 
-    channel_config.Channel = raw_input_channels[i];
-    channel_config.Rank = ADC_NUM_MUX_INPUTS + i + 1;
-    channel_config.SamplingTime = ADC_NUM_SAMPLE_CYCLES;
-    if (HAL_ADC_ConfigChannel(&adc_handle, &channel_config) != HAL_OK)
-      board_error_handler();
-
-    gpio_init.Pin = channel_pins[raw_input_channels[i]];
-    gpio_init.Mode = GPIO_MODE_ANALOG;
-    gpio_init.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(channel_ports[raw_input_channels[i]], &gpio_init);
+    gpio_default_para_init(&gpio_init_struct);
+    gpio_init_struct.gpio_pins = channel_pins[raw_input_channels[i]];
+    gpio_init_struct.gpio_mode = GPIO_MODE_ANALOG;
+    gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+    gpio_init(channel_ports[raw_input_channels[i]], &gpio_init_struct);
   }
 #endif
 
-  // Initialize the DMA peripheral
-  dma_handle.Instance = DMA2_Stream0;
-  dma_handle.Init.Channel = DMA_CHANNEL_0;
-  dma_handle.Init.Direction = DMA_PERIPH_TO_MEMORY;
-  dma_handle.Init.PeriphInc = DMA_PINC_DISABLE;
-  dma_handle.Init.MemInc = DMA_MINC_ENABLE;
-  dma_handle.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
-  dma_handle.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
-  dma_handle.Init.Mode = DMA_CIRCULAR;
-  dma_handle.Init.Priority = DMA_PRIORITY_HIGH;
-  dma_handle.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-  if (HAL_DMA_Init(&dma_handle) != HAL_OK)
-    board_error_handler();
+  // Configure the ADC trigger source as software
+  adc_ordinary_conversion_trigger_set(ADC1, ADC12_ORDINARY_TRIG_SOFTWARE, TRUE);
 
-  __HAL_LINKDMA(&adc_handle, DMA_Handle, dma_handle);
+  // Initialize the DMA peripheral
+  dma_reset(DMA1_CHANNEL1);
+  dma_default_para_init(&dma_init_struct);
+  dma_init_struct.buffer_size = ADC_NUM_MUX_INPUTS + ADC_NUM_RAW_INPUTS;
+  dma_init_struct.direction = DMA_DIR_PERIPHERAL_TO_MEMORY;
+  dma_init_struct.memory_base_addr = (uint32_t)adc_buffer;
+  dma_init_struct.memory_data_width = DMA_MEMORY_DATA_WIDTH_HALFWORD;
+  dma_init_struct.memory_inc_enable = TRUE;
+  dma_init_struct.peripheral_base_addr = (uint32_t)&ADC1->odt;
+  dma_init_struct.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_HALFWORD;
+  dma_init_struct.peripheral_inc_enable = FALSE;
+  dma_init_struct.priority = DMA_PRIORITY_HIGH;
+  dma_init_struct.loop_mode_enable = TRUE;
+  dma_init(DMA1_CHANNEL1, &dma_init_struct);
+
+  // Configure the DMA multiplexer to use ADC1
+  dmamux_enable(DMA1, TRUE);
+  dmamux_init(DMA1MUX_CHANNEL1, DMAMUX_DMAREQ_ID_ADC1);
+  // Enable DMA transfer complete interrupt
+  dma_interrupt_enable(DMA1_CHANNEL1, DMA_FDT_INT, TRUE);
+
+  // Enable ADC DMA mode
+  adc_dma_mode_enable(ADC1, TRUE);
 
 #if ADC_NUM_MUX_INPUTS > 0
   // Initialize the timer peripheral
-  tim_handle.Instance = TIM10;
-  tim_handle.Init.Prescaler = 0;
-  tim_handle.Init.CounterMode = TIM_COUNTERMODE_UP;
-  tim_handle.Init.Period = (F_CPU / 2000000) * ADC_SAMPLE_DELAY - 1;
-  tim_handle.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  tim_handle.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&tim_handle) != HAL_OK)
-    board_error_handler();
+  tmr_base_init(TMR6, (F_CPU / 1000000) * ADC_SAMPLE_DELAY - 1, 0);
+  tmr_cnt_dir_set(TMR6, TMR_COUNT_UP);
+  tmr_interrupt_enable(TMR6, TMR_OVF_INT, TRUE);
 #endif
 
   // Enable interrupts
-  HAL_NVIC_EnableIRQ(ADC_IRQn);
-  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  nvic_irq_enable(ADC1_IRQn, 0, 0);
+  nvic_irq_enable(DMA1_Channel1_IRQn, 0, 0);
 #if ADC_NUM_MUX_INPUTS > 0
-  HAL_NVIC_EnableIRQ(TIM1_UP_TIM10_IRQn);
+  nvic_irq_enable(TMR6_GLOBAL_IRQn, 0, 0);
 #endif
 
-  // Start the conversion loop
-  HAL_ADC_Start_DMA(&adc_handle, (uint32_t *)adc_buffer,
-                    ADC_NUM_MUX_INPUTS + ADC_NUM_RAW_INPUTS);
+  // Enable the ADC peripheral
+  adc_enable(ADC1, TRUE);
+
+  // Calibrate the ADC
+  adc_calibration_init(ADC1);
+  while (adc_calibration_init_status_get(ADC1) == SET)
+    ;
+  adc_calibration_start(ADC1);
+  while (adc_calibration_status_get(ADC1) == SET)
+    ;
+
+  // Enable DMA after ADC initialization
+  dma_channel_enable(DMA1_CHANNEL1, TRUE);
+  // Start the ADC conversion
+  adc_ordinary_software_trigger_enable(ADC1, TRUE);
 
   // Wait for the ADC values to be initialized
   while (!adc_initialized)
@@ -225,20 +226,15 @@ uint16_t analog_read(uint8_t key) { return adc_values[key]; }
 // Interrupt Handlers
 //--------------------------------------------------------------------+
 
-void ADC_IRQHandler(void) { HAL_ADC_IRQHandler(&adc_handle); }
-
-void DMA2_Stream0_IRQHandler(void) { HAL_DMA_IRQHandler(&dma_handle); }
-
-#if ADC_NUM_MUX_INPUTS > 0
-void TIM1_UP_TIM10_IRQHandler(void) { HAL_TIM_IRQHandler(&tim_handle); }
-#endif
-
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+void DMA1_Channel1_IRQHandler(void) {
 #if ADC_NUM_MUX_INPUTS > 0
   static uint8_t current_mux_channel = 0;
 #endif
 
-  if (hadc == &adc_handle) {
+  if (dma_interrupt_flag_get(DMA1_FDT1_FLAG) == SET) {
+    // Clear the DMA transfer complete flag
+    dma_flag_clear(DMA1_FDT1_FLAG);
+
 #if ADC_NUM_MUX_INPUTS > 0
     for (uint32_t i = 0; i < ADC_NUM_MUX_INPUTS; i++) {
       const uint16_t key = mux_input_matrix[current_mux_channel][i];
@@ -264,30 +260,29 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
 
     // Set the multiplexer select pins
     for (uint32_t i = 0; i < ADC_NUM_MUX_SELECT_PINS; i++)
-      HAL_GPIO_WritePin(mux_select_ports[i], mux_select_pins[i],
-                        (current_mux_channel >> i) & 1);
+      gpio_bits_write(mux_select_ports[i], mux_select_pins[i],
+                      (confirm_state)((current_mux_channel >> i) & 1));
 
     // Delay to allow the multiplexer outputs to settle
-    HAL_TIM_Base_Start_IT(&tim_handle);
+    tmr_counter_enable(TMR6, TRUE);
 #else
     // We initialize all the ADC values when we have read all the raw input.
     adc_initialized = true;
     // Immediately start the next conversion
-    HAL_ADC_Start_DMA(&adc_handle, (uint32_t *)adc_buffer,
-                      ADC_NUM_MUX_INPUTS + ADC_NUM_RAW_INPUTS);
+    adc_ordinary_software_trigger_enable(ADC1, TRUE);
 #endif
   }
 }
 
 #if ADC_NUM_MUX_INPUTS > 0
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-  if (htim == &tim_handle) {
-    // Stop the timer to prevent this callback from being called again while the
-    // ADC is still converting
-    HAL_TIM_Base_Stop_IT(&tim_handle);
+void TMR6_GLOBAL_IRQHandler(void) {
+  if (tmr_interrupt_flag_get(TMR6, TMR_OVF_INT) == SET) {
+    // Clear the timer overflow flag
+    tmr_flag_clear(TMR6, TMR_OVF_INT);
+    // Disable the timer to stop the delay
+    tmr_counter_enable(TMR6, FALSE);
     // Start the next conversion
-    HAL_ADC_Start_DMA(&adc_handle, (uint32_t *)adc_buffer,
-                      ADC_NUM_MUX_INPUTS + ADC_NUM_RAW_INPUTS);
+    adc_ordinary_software_trigger_enable(ADC1, TRUE);
   }
 }
 #endif

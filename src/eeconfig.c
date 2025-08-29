@@ -18,97 +18,69 @@
 #include "advanced_keys.h"
 #include "keycodes.h"
 #include "layout.h"
-
-// Helper macro to update a field in the configuration
-#define EECONFIG_UPDATE(field, value)                                          \
-  wear_leveling_write(offsetof(eeconfig_t, field), value,                      \
-                      sizeof(((eeconfig_t *)0)->field))
-#define EECONFIG_UPDATE_N(field, value, len)                                   \
-  wear_leveling_write(offsetof(eeconfig_t, field), value, len)
+#include "migration.h"
 
 const eeconfig_t *eeconfig;
 
-static const eeconfig_t default_eeconfig = {
-    .magic_start = EECONFIG_MAGIC_START,
-    .version = EECONFIG_VERSION,
-    .calibration = DEFAULT_CALIBRATION,
-    .current_profile = 0,
-    .last_non_default_profile = M_MIN(1, NUM_PROFILES - 1),
-    .profiles = {[0 ... NUM_PROFILES - 1] = DEFAULT_PROFILE},
-    .magic_end = EECONFIG_MAGIC_END,
+// Default configuration values
+static eeconfig_options_t default_options = DEFAULT_OPTIONS;
+static eeconfig_calibration_t default_calibration = DEFAULT_CALIBRATION;
+static eeconfig_profile_t default_profile = {
+    .keymap = DEFAULT_KEYMAP,
+    .gamepad_options = DEFAULT_GAMEPAD_OPTIONS,
+    .tick_rate = DEFAULT_TICK_RATE,
 };
 
+static bool eeconfig_is_latest_version(void) {
+  return eeconfig->magic_start == EECONFIG_MAGIC_START &&
+         eeconfig->magic_end == EECONFIG_MAGIC_END &&
+         eeconfig->version == EECONFIG_VERSION;
+}
+
 void eeconfig_init(void) {
+  // Update default profile with its default values
+  for (uint32_t i = 0; i < NUM_KEYS; i++)
+    default_profile.actuation_map[i].actuation_point = DEFAULT_ACTUATION_POINT;
+
   eeconfig = (const eeconfig_t *)wl_cache;
-  if (eeconfig->magic_start != EECONFIG_MAGIC_START ||
-      eeconfig->magic_end != EECONFIG_MAGIC_END)
-    // If the configuration is invalid, reset it
+  if (!eeconfig_is_latest_version() && !migration_try_migrate())
     eeconfig_reset();
 }
 
+// Helper macro for writing rvalue
+#define EECONFIG_WRITE_LOCAL(field, value)                                     \
+  do {                                                                         \
+    typeof(((eeconfig_t *)0)->field) _value = value;                           \
+    status &= EECONFIG_WRITE(field, &_value);                                  \
+  } while (0)
+
 bool eeconfig_reset(void) {
-  const bool status =
-      wear_leveling_write(0, &default_eeconfig, sizeof(default_eeconfig));
-  layout_load_advanced_keys();
-
-  return status;
-}
-
-bool eeconfig_set_tick_rate(uint8_t profile, uint8_t tick_rate) {
-  if (profile >= NUM_PROFILES)
-    return false;
-
-  return EECONFIG_UPDATE(profiles[profile].tick_rate, &tick_rate);
-}
-
-bool eeconfig_set_calibration(const void *calibration) {
-  return EECONFIG_UPDATE(calibration, calibration);
-}
-
-bool eeconfig_set_current_profile(uint8_t profile) {
-  if (profile >= NUM_PROFILES)
-    return false;
-
+  bool status = true;
   advanced_key_clear();
-  bool status = EECONFIG_UPDATE(current_profile, &profile);
-  if (status && profile != 0)
-    status = EECONFIG_UPDATE(last_non_default_profile, &profile);
+  EECONFIG_WRITE_LOCAL(magic_start, EECONFIG_MAGIC_START);
+  EECONFIG_WRITE_LOCAL(version, EECONFIG_VERSION);
+  status &= EECONFIG_WRITE(calibration, &default_calibration);
+  status &= EECONFIG_WRITE(options, &default_options);
+  EECONFIG_WRITE_LOCAL(current_profile, 0);
+  EECONFIG_WRITE_LOCAL(last_non_default_profile, M_MIN(1, NUM_PROFILES - 1));
+  for (uint32_t i = 0; i < NUM_PROFILES; i++)
+    status &= EECONFIG_WRITE(profiles[i], &default_profile);
+  EECONFIG_WRITE_LOCAL(magic_end, EECONFIG_MAGIC_END);
   layout_load_advanced_keys();
 
   return status;
 }
 
-bool eeconfig_set_keymap(uint8_t profile, uint8_t layer, uint8_t start,
-                         uint8_t len, const void *keymap) {
-  if (profile >= NUM_PROFILES || layer >= NUM_LAYERS || start + len > NUM_KEYS)
-    return false;
+#undef EECONFIG_WRITE_LOCAL
 
-  return EECONFIG_UPDATE_N(profiles[profile].keymap[layer][start], keymap, len);
-}
-
-bool eeconfig_set_actuation_map(uint8_t profile, uint8_t start, uint8_t len,
-                                const void *actuation_map) {
-  if (profile >= NUM_PROFILES || start + len > NUM_KEYS)
-    return false;
-
-  return EECONFIG_UPDATE_N(profiles[profile].actuation_map[start],
-                           actuation_map, len * sizeof(actuation_t));
-}
-
-bool eeconfig_set_advanced_keys(uint8_t profile, uint8_t start, uint8_t len,
-                                const void *advanced_key) {
-  if (profile >= NUM_PROFILES || start + len > NUM_ADVANCED_KEYS)
+bool eeconfig_reset_profile(uint8_t profile) {
+  if (profile >= NUM_PROFILES)
     return false;
 
   if (eeconfig->current_profile == profile)
-    // We only need to clear the advanced keys if the advanced keys in
-    // the current profile are being updated.
     advanced_key_clear();
-  const bool status =
-      EECONFIG_UPDATE_N(profiles[profile].advanced_keys[start], advanced_key,
-                        len * sizeof(advanced_key_t));
+  const bool status = EECONFIG_WRITE(profiles[profile], &default_profile);
   if (eeconfig->current_profile == profile)
-    // Same as above
     layout_load_advanced_keys();
 
   return status;

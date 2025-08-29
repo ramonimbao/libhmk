@@ -23,6 +23,7 @@
 #include "hid.h"
 #include "keycodes.h"
 #include "matrix.h"
+#include "xinput.h"
 
 // Layer mask. Each bit represents whether a layer is active or not.
 static uint16_t layer_mask;
@@ -78,7 +79,7 @@ __attribute__((always_inline)) static inline void layout_layer_lock(void) {
  */
 static uint8_t layout_get_keycode(uint8_t current_layer, uint8_t key) {
   // Find the first active layer with a non-transparent keycode
-  for (uint32_t i = current_layer + 1; i-- > 0;) {
+  for (uint32_t i = (uint32_t)current_layer + 1; i-- > 0;) {
     if (((layer_mask >> i) & 1) == 0)
       // Layer is not active
       continue;
@@ -137,6 +138,24 @@ void layout_task(void) {
   for (uint32_t i = 0; i < NUM_KEYS; i++) {
     const key_state_t *k = &key_matrix[i];
     const bool last_key_press = bitmap_get(key_press_states, i);
+
+    if ((current_layer == 0) & eeconfig->options.xinput_enabled) {
+      // XInput key only applies to layer 0. We process it first since the
+      // subsequent key processing may be skipped due to the gamepad options.
+      if (CURRENT_PROFILE.gamepad_buttons[i] != GP_BUTTON_NONE) {
+        xinput_process(i);
+
+        if (CURRENT_PROFILE.gamepad_options.gamepad_override)
+          // If the key is mapped to a gamepad button, and the gamepad override
+          // is enabled, we skip the key processing.
+          continue;
+      }
+
+      if (!CURRENT_PROFILE.gamepad_options.keyboard_enabled)
+        // If the keyboard is disabled for this profile, we skip the key
+        // processing.
+        continue;
+    }
 
     if ((current_layer == 0) & bitmap_get(key_disabled, i))
       // Only keys in layer 0 can be disabled.
@@ -219,6 +238,29 @@ void layout_task(void) {
   deferred_action_process();
 }
 
+/**
+ * @brief Set the current profile
+ *
+ * This function also refreshes the advanced keys, and saves the last
+ * non-default profile for profile swapping.
+ *
+ * @param profile Profile index
+ *
+ * @return true if successful, false otherwise
+ */
+static bool layout_set_profile(uint8_t profile) {
+  if (profile >= NUM_PROFILES)
+    return false;
+
+  advanced_key_clear();
+  bool status = EECONFIG_WRITE(current_profile, &profile);
+  if (status && profile != 0)
+    status = EECONFIG_WRITE(last_non_default_profile, &profile);
+  layout_load_advanced_keys();
+
+  return status;
+}
+
 void layout_register(uint8_t key, uint8_t keycode) {
   if (keycode == KC_NO)
     return;
@@ -234,7 +276,7 @@ void layout_register(uint8_t key, uint8_t keycode) {
     break;
 
   case PROFILE_RANGE:
-    eeconfig_set_current_profile(PF_GET_PROFILE(keycode));
+    layout_set_profile(PF_GET_PROFILE(keycode));
     break;
 
   case SP_KEY_LOCK:
@@ -246,13 +288,12 @@ void layout_register(uint8_t key, uint8_t keycode) {
     break;
 
   case SP_PROFILE_SWAP:
-    eeconfig_set_current_profile(
+    layout_set_profile(
         eeconfig->current_profile ? 0 : eeconfig->last_non_default_profile);
     break;
 
   case SP_PROFILE_NEXT:
-    eeconfig_set_current_profile((eeconfig->current_profile + 1) %
-                                 NUM_PROFILES);
+    layout_set_profile((eeconfig->current_profile + 1) % NUM_PROFILES);
     break;
 
   case SP_BOOT:
